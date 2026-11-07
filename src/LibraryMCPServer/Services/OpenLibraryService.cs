@@ -25,7 +25,7 @@ public sealed class OpenLibraryService
             ["Business"] = ["subject:business management", "subject:entrepreneurship finance"],
             ["Self-Help"] = ["subject:self-help personal development", "subject:self help"],
             ["Programming"] = ["subject:computer programming", "subject:software development", "subject:programming languages"],
-            ["Technology"] = ["subject:technology computing", "subject:information technology", "subject:computer science technology"],
+            ["Technology"] = ["subject:technology computing", "subject:information technology", "subject:computer science technology", "subject:electronics", "subject:engineering technology", "subject:computers", "technology", "computers technology", "engineering technology"],
             ["Science Fiction"] = ["subject:science fiction", "subject:space opera", "subject:cyberpunk science fiction"]
         };
 
@@ -56,19 +56,24 @@ public sealed class OpenLibraryService
         var newBooks = 0;
         foreach (var genre in SeedGenres)
         {
-            var accepted = 0;
+            var accepted = await _context.Books.CountAsync(b => b.Genre == genre, cancellationToken);
             var seenIsbns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var query in SearchQueries[genre])
             {
                 if (accepted >= targetPerGenre) break;
-                var docs = await SearchAsync(query, Math.Min(100, targetPerGenre * 2), delayMilliseconds, retries, cancellationToken);
-                foreach (var doc in docs)
+                for (var offset = 0; offset <= 500 && accepted < targetPerGenre; offset += 100)
                 {
-                    var book = ParseBook(doc, genre);
-                    if (book is null || !seenIsbns.Add(book.ISBN)) continue;
-                    await UpsertAsync(book, cancellationToken, isNew => newBooks += isNew ? 1 : 0);
-                    accepted++;
-                    if (accepted >= targetPerGenre) break;
+                    var docs = await SearchAsync(query, 100, offset, delayMilliseconds, retries, cancellationToken);
+                    foreach (var doc in docs)
+                    {
+                        var book = ParseBook(doc, genre);
+                        if (book is null || !seenIsbns.Add(book.ISBN)) continue;
+                        var existing = await _context.Books.AsNoTracking().FirstOrDefaultAsync(b => b.ISBN == book.ISBN, cancellationToken);
+                        await UpsertAsync(book, cancellationToken, isNew => newBooks += isNew ? 1 : 0);
+                        if (existing is null || !string.Equals(existing.Genre, genre, StringComparison.OrdinalIgnoreCase)) accepted++;
+                        if (accepted >= targetPerGenre) break;
+                    }
+                    if (docs.Count < 100) break;
                 }
             }
             await _context.SaveChangesAsync(cancellationToken);
@@ -82,7 +87,7 @@ public sealed class OpenLibraryService
     {
         if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Query keyword cannot be empty.", nameof(query));
         var requestedGenre = LibraryGenreRules.MapGenre(query, query);
-        var docs = await SearchAsync(query.Trim(), Math.Clamp(limit, 1, 100), 250, 3, cancellationToken);
+        var docs = await SearchAsync(query.Trim(), Math.Clamp(limit, 1, 100), 0, 250, 3, cancellationToken);
         var titles = new List<string>();
         foreach (var doc in docs)
         {
@@ -125,9 +130,9 @@ public sealed class OpenLibraryService
         return false;
     }
 
-    private async Task<List<JsonElement>> SearchAsync(string query, int limit, int delayMilliseconds, int retries, CancellationToken cancellationToken)
+    private async Task<List<JsonElement>> SearchAsync(string query, int limit, int offset, int delayMilliseconds, int retries, CancellationToken cancellationToken)
     {
-        var url = $"https://openlibrary.org/search.json?q={Uri.EscapeDataString(query)}&limit={Math.Clamp(limit, 1, 100)}&fields=title,author_name,isbn,first_publish_year,number_of_pages_median,ratings_average,first_sentence,subject";
+        var url = $"https://openlibrary.org/search.json?q={Uri.EscapeDataString(query)}&limit={Math.Clamp(limit, 1, 100)}&offset={offset}&fields=title,author_name,isbn,first_publish_year,number_of_pages_median,ratings_average,first_sentence,subject";
         for (var attempt = 0; ; attempt++)
         {
             try
@@ -165,7 +170,9 @@ public sealed class OpenLibraryService
         if (LibraryGenreRules.ShouldRejectSubjects(subjects, requestedGenre, _filterJuvenileAndAdultContent)) return null;
         if (!item.TryGetProperty("first_publish_year", out var yearElement) || !yearElement.TryGetInt32(out var year) || year is < 1000 or > 2100) return null;
 
-        var genre = LibraryGenreRules.MapGenre(requestedGenre, string.Join(", ", subjects));
+        var genre = LibraryGenreRules.AllowedGenres.Contains(requestedGenre, StringComparer.OrdinalIgnoreCase)
+            ? LibraryGenreRules.AllowedGenres.First(g => g.Equals(requestedGenre, StringComparison.OrdinalIgnoreCase))
+            : LibraryGenreRules.MapGenre(requestedGenre, string.Join(", ", subjects));
         var pageCount = item.TryGetProperty("number_of_pages_median", out var pages) && pages.TryGetInt32(out var count) && count > 0 ? Math.Clamp(count, 1, 10000) : 1;
         double? rating = item.TryGetProperty("ratings_average", out var ratingElement) && ratingElement.TryGetDouble(out var value) && value is >= 0 and <= 5 ? Math.Round(value, 2) : null;
         var cleanIsbn = isbn.Replace("-", string.Empty);
