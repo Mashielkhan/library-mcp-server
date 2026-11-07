@@ -33,6 +33,7 @@ builder.Services.Configure<LibrarySettings>(
 builder.Services.Configure<OpenLibrarySettings>(
     builder.Configuration.GetSection(OpenLibrarySettings.SectionName));
 builder.Services.AddSingleton(builder.Configuration.GetSection(LibrarySettings.SectionName).Get<LibrarySettings>() ?? new LibrarySettings());
+builder.Services.AddSingleton(builder.Configuration.GetSection(OpenLibrarySettings.SectionName).Get<OpenLibrarySettings>() ?? new OpenLibrarySettings());
 
 // Configure EF Core with SQL Server
 builder.Services.AddDbContext<LibraryDbContext>((sp, options) =>
@@ -59,6 +60,7 @@ builder.Services.AddSingleton(new HttpClient());
 builder.Services.AddScoped<OpenLibraryService>();
 builder.Services.AddScoped<OpenLibraryDumpLoader>();
 builder.Services.AddScoped<GoodbooksRatingsLoader>();
+builder.Services.AddHostedService<OpenLibraryRefreshService>();
 
 // Register application services and tools
 builder.Services.AddScoped<ILibraryService, LibraryService>();

@@ -39,7 +39,9 @@ public sealed class OpenLibraryService
     private static DateTime _lastRequestUtc = DateTime.MinValue;
     private static readonly Dictionary<string, (DateTimeOffset Expires, JsonDocument Document)> LiveCache = new(StringComparer.OrdinalIgnoreCase);
 
-    public OpenLibraryService(HttpClient httpClient, LibraryDbContext context, IMemoryCache cache, ILogger<OpenLibraryService> logger, LibrarySettings? settings = null)
+    private readonly OpenLibrarySettings _openLibrarySettings;
+
+    public OpenLibraryService(HttpClient httpClient, LibraryDbContext context, IMemoryCache cache, ILogger<OpenLibraryService> logger, LibrarySettings? settings = null, OpenLibrarySettings? openLibrarySettings = null)
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _context = context ?? throw new ArgumentNullException(nameof(context));
@@ -47,10 +49,32 @@ public sealed class OpenLibraryService
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _filterJuvenileAndAdultContent = settings?.FilterJuvenileAndAdultContent ?? true;
         _defaultCopiesAvailable = Math.Max(1, settings?.DefaultCopiesAvailable ?? 5);
+        _openLibrarySettings = openLibrarySettings ?? new OpenLibrarySettings();
         if (_httpClient.DefaultRequestHeaders.UserAgent.Count == 0)
         {
-            _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("LibraryMCPServer/1.0 (MCP library catalog)");
+            var contact = string.IsNullOrWhiteSpace(_openLibrarySettings.ContactEmail) ? "without-email" : _openLibrarySettings.ContactEmail;
+            _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd($"LibraryMCPServer ({contact})");
         }
+    }
+
+    public async Task<int> RefreshStaleBooksAsync(CancellationToken cancellationToken = default)
+    {
+        var cutoff = DateTime.UtcNow.AddDays(-Math.Max(1, _openLibrarySettings.RefreshDays));
+        var books = await _context.Books.Where(x => x.OpenLibraryKey != null && (x.LastSyncedAt == null || x.LastSyncedAt < cutoff)).OrderBy(x => x.LastSyncedAt).Take(Math.Max(1, _openLibrarySettings.BatchSize)).ToListAsync(cancellationToken);
+        var refreshed = 0;
+        foreach (var book in books)
+        {
+            using var document = await GetJsonAsync($"https://openlibrary.org{book.OpenLibraryKey}.json", cancellationToken);
+            var edition = document.RootElement;
+            book.Title = (GetString(edition, "title") ?? book.Title)[..Math.Min(200, (GetString(edition, "title") ?? book.Title).Length)];
+            book.Subjects = LibraryGenreRules.NormalizeSubjects(GetArrayStrings(edition, "subjects"));
+            book.PageCount = Math.Clamp(GetInt(edition, "number_of_pages") ?? book.PageCount, 1, 10000);
+            book.CoverImageUrl = $"https://covers.openlibrary.org/b/isbn/{book.ISBN}-M.jpg";
+            book.LastSyncedAt = DateTime.UtcNow;
+            refreshed++;
+        }
+        if (refreshed > 0) await _context.SaveChangesAsync(cancellationToken);
+        return refreshed;
     }
 
     public async Task<IReadOnlyList<object>> SearchOpenLibraryAsync(string query, int page = 1, int pageSize = 10, CancellationToken cancellationToken = default)

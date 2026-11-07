@@ -9,4 +9,8 @@ public sealed class OpenLibrarySettings
     public int RefreshDays { get; set; } = 30;
 
     public bool EnableBackgroundRefresh { get; set; } = false;
+
+    public int BatchSize { get; set; } = 25;
+
+    public int MaxConsecutiveErrors { get; set; } = 3;
 }
