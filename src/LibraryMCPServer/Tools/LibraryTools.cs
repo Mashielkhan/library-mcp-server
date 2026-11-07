@@ -416,4 +416,20 @@ public sealed class LibraryTools
             return new { success = false, error = "Failed to import books from Open Library. Please verify internet connectivity." };
         }
     }
+
+    [McpServerTool(Name = "search_open_library", ReadOnly = true, Idempotent = true)]
+    [Description("Searches Open Library live without writing to the local database and marks each result with inLibrary.")]
+    public async Task<object> SearchOpenLibraryAsync(string query, int page = 1, int pageSize = 10, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(query)) return new { error = "Query cannot be empty." };
+        return new { query, page, pageSize, results = await _openLibraryService.SearchOpenLibraryAsync(query, page, pageSize, cancellationToken) };
+    }
+
+    [McpServerTool(Name = "add_book_by_isbn", ReadOnly = false, Idempotent = true)]
+    [Description("Fetches and validates one Open Library edition by ISBN-13 and upserts it into the local catalog.")]
+    public async Task<object> AddBookByIsbnAsync(string isbn, int copies = 1, CancellationToken cancellationToken = default)
+    {
+        try { return await _openLibraryService.AddBookByIsbnAsync(isbn, copies, cancellationToken); }
+        catch (Exception ex) { _logger.LogError(ex, "Failed to add Open Library ISBN {Isbn}", isbn); return new { error = ex.Message }; }
+    }
 }

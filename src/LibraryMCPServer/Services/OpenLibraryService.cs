@@ -35,6 +35,9 @@ public sealed class OpenLibraryService
     private readonly ILogger<OpenLibraryService> _logger;
     private readonly bool _filterJuvenileAndAdultContent;
     private readonly int _defaultCopiesAvailable;
+    private static readonly SemaphoreSlim RequestGate = new(1, 1);
+    private static DateTime _lastRequestUtc = DateTime.MinValue;
+    private static readonly Dictionary<string, (DateTimeOffset Expires, JsonDocument Document)> LiveCache = new(StringComparer.OrdinalIgnoreCase);
 
     public OpenLibraryService(HttpClient httpClient, LibraryDbContext context, IMemoryCache cache, ILogger<OpenLibraryService> logger, LibrarySettings? settings = null)
     {
@@ -49,6 +52,71 @@ public sealed class OpenLibraryService
             _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("LibraryMCPServer/1.0 (MCP library catalog)");
         }
     }
+
+    public async Task<IReadOnlyList<object>> SearchOpenLibraryAsync(string query, int page = 1, int pageSize = 10, CancellationToken cancellationToken = default)
+    {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 50);
+        var url = $"https://openlibrary.org/search.json?q={Uri.EscapeDataString(query)}&page={page}&limit={pageSize}&fields=key,title,author_name,isbn,first_publish_year,cover_i";
+        using var document = await GetJsonAsync(url, cancellationToken);
+        if (!document.RootElement.TryGetProperty("docs", out var docs)) return [];
+        var results = new List<object>();
+        foreach (var doc in docs.EnumerateArray())
+        {
+            var isbn = GetArrayString(doc, "isbn", IsbnValidator.IsValidIsbn13);
+            var inLibrary = isbn is not null && await _context.Books.AnyAsync(x => x.ISBN == IsbnValidator.FormatIsbn13(isbn), cancellationToken);
+            results.Add(new { key = GetString(doc, "key"), title = GetString(doc, "title"), author = GetArrayString(doc, "author_name"), isbn13 = isbn is null ? null : IsbnValidator.FormatIsbn13(isbn), publishedYear = doc.TryGetProperty("first_publish_year", out var year) ? year.GetInt32() : (int?)null, coverId = doc.TryGetProperty("cover_i", out var cover) ? cover.GetInt64() : (long?)null, inLibrary });
+        }
+        return results;
+    }
+
+    public async Task<Book> AddBookByIsbnAsync(string isbn, int copies = 1, CancellationToken cancellationToken = default)
+    {
+        if (!IsbnValidator.IsValidIsbn13(isbn)) throw new ArgumentException("A valid ISBN-13 is required.", nameof(isbn));
+        var clean = IsbnValidator.FormatIsbn13(isbn);
+        using var document = await GetJsonAsync($"https://openlibrary.org/isbn/{clean}.json", cancellationToken);
+        var edition = document.RootElement;
+        var title = GetString(edition, "title");
+        var year = ParseYear(edition);
+        var subjects = GetArrayStrings(edition, "subjects");
+        var authorKey = edition.TryGetProperty("authors", out var authors) && authors.ValueKind == JsonValueKind.Array ? authors.EnumerateArray().Select(x => GetString(x, "key")).FirstOrDefault(x => x is not null) : null;
+        if (title is null || year is null || authorKey is null) throw new InvalidDataException("Open Library returned an incomplete edition.");
+        var author = await ResolveAuthorNameAsync(authorKey, cancellationToken);
+        if (author is null) throw new InvalidDataException("Open Library author could not be resolved.");
+        var genre = LibraryGenreRules.MapGenre(null, string.Join(", ", subjects));
+        if (LibraryGenreRules.ShouldRejectSubjects(subjects, genre)) throw new InvalidDataException("The edition subjects were filtered.");
+        var book = new Book { ISBN = clean, Title = title[..Math.Min(200, title.Length)], Author = author[..Math.Min(150, author.Length)], Genre = genre, Subjects = LibraryGenreRules.NormalizeSubjects(subjects), PublishedYear = year.Value, CopiesAvailable = Math.Max(1, copies), PageCount = GetInt(edition, "number_of_pages") ?? 300, CoverImageUrl = $"https://covers.openlibrary.org/b/isbn/{clean}-M.jpg", IsAuthentic = true, IsSample = false, OpenLibraryKey = GetString(edition, "key"), LastSyncedAt = DateTime.UtcNow };
+        await UpsertAsync(book, cancellationToken, _ => { });
+        await _context.SaveChangesAsync(cancellationToken);
+        return await _context.Books.AsNoTracking().SingleAsync(x => x.ISBN == clean, cancellationToken);
+    }
+
+    private async Task<JsonDocument> GetJsonAsync(string url, CancellationToken cancellationToken)
+    {
+        lock (LiveCache) if (LiveCache.TryGetValue(url, out var cached) && cached.Expires > DateTimeOffset.UtcNow) return JsonDocument.Parse(cached.Document.RootElement.GetRawText());
+        for (var attempt = 0; ; attempt++)
+        {
+            await RequestGate.WaitAsync(cancellationToken);
+            try { var wait = TimeSpan.FromMilliseconds(334) - (DateTime.UtcNow - _lastRequestUtc); if (wait > TimeSpan.Zero) await Task.Delay(wait, cancellationToken); _lastRequestUtc = DateTime.UtcNow; }
+            finally { RequestGate.Release(); }
+            using var response = await _httpClient.GetAsync(url, cancellationToken);
+            if ((int)response.StatusCode is 429 or >= 500 && attempt < 4) { var delay = response.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(Math.Pow(2, attempt)); await Task.Delay(delay, cancellationToken); continue; }
+            response.EnsureSuccessStatusCode();
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            lock (LiveCache) LiveCache[url] = (DateTimeOffset.UtcNow.AddHours(24), JsonDocument.Parse(document.RootElement.GetRawText()));
+            return document;
+        }
+    }
+
+    private async Task<string?> ResolveAuthorNameAsync(string key, CancellationToken cancellationToken)
+    {
+        using var document = await GetJsonAsync($"https://openlibrary.org{key}.json", cancellationToken);
+        return GetString(document.RootElement, "name");
+    }
+
+    private static int? ParseYear(JsonElement value) { var text = GetString(value, "publish_date"); return text is not null && int.TryParse(new string(text.Take(4).ToArray()), out var year) ? year : null; }
+    private static int? GetInt(JsonElement value, string property) => value.TryGetProperty(property, out var element) && element.TryGetInt32(out var result) ? result : null;
 
     public async Task<int> SeedAsync(int targetCount = 1000, int delayMilliseconds = 250, int retries = 3, CancellationToken cancellationToken = default)
     {
