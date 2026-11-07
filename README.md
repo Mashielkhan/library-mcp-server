@@ -52,24 +52,50 @@ dotnet restore LibraryMCPServer.sln
 dotnet test LibraryMCPServer.sln
 ```
 
+The first normal startup applies pending EF migrations and adds the curated catalog when `LibrarySettings:EnableAutoMigrationAndSeed` is enabled. It does not delete existing rows.
+
 ### Connect with SQL Server Management Studio
 
 Use these SSMS connection settings on the development machine:
 
 - **Server type:** Database Engine
-- **Server name:** `.\SQLEXPRESS01`
+- **Server name:** `./SQLEXPRESS01`
 - **Authentication:** Windows Authentication
 - **Database:** `LibraryDb`
 
-The application uses the same server in `appsettings.json`. EF Core applies pending migrations at startup. The verification queries in `scripts/InspectLibraryDb.sql` can be opened and executed in SSMS.
+The application uses the same server in `appsettings.json`. Open `scripts/InspectLibraryDb.sql` in SSMS to inspect counts, books, and applied migrations.
 
-The first normal startup applies EF migrations and adds the curated authentic catalog when `LibrarySettings:EnableAutoMigrationAndSeed` is enabled. It does not delete existing rows.
+## Open Library import
 
-## Real Open Library data
+The seed command imports books across these ten normalized genres:
 
-The seed command queries the Open Library Search API for these genres: Mystery, Romance, Biography, History, Fantasy, Business, Self-Help, Programming, Technology, and Science Fiction. It validates ISBN-13 check digits, skips missing title/author/ISBN/year records, stores API ratings only when present, retries transient failures, waits between requests, and aggregates duplicate ISBNs as additional copies.
+- Mystery
+- Romance
+- Biography
+- History
+- Fantasy
+- Business
+- Self-Help
+- Programming
+- Technology
+- Science Fiction
 
-Run approximately 1,000 imports:
+`Books.Genre` always contains exactly one of those values. Raw Open Library subject tags are stored separately in `Books.Subjects` (`nvarchar(max)`). The `NormalizeOpenLibraryGenres` migration populated `Subjects` for existing rows and normalized their previous genre values.
+
+The importer:
+
+- Validates and normalizes ISBN-13 values.
+- Skips records missing a title, author, ISBN-13, or publication year.
+- Uses specific queries and paged result offsets for Business, Self-Help, Programming, Technology, and Science Fiction.
+- Rejects metadata subjects beginning with `nyt:`, `collectionID:`, or `series:`.
+- Rejects juvenile and adult-explicit subjects by default (`Juvenile`, `erotica`, `BDSM`).
+- Rejects configured nonfiction markers for Fantasy and Romance.
+- Uses the API rating when available and otherwise stores `null`.
+- Updates an existing ISBN in place on re-import instead of inserting a duplicate or adding copies.
+- Sets imported records to the fixed `DefaultCopiesAvailable` value, which defaults to 5.
+- Retries transient API failures and rate-limits requests.
+
+Run approximately 1,000 target records:
 
 ```powershell
 .\scripts\SeedOpenLibrary.ps1 -TargetCount 1000
@@ -82,7 +108,34 @@ $env:OPEN_LIBRARY_TARGET_COUNT = 1000
 dotnet run --project src/LibraryMCPServer/LibraryMCPServer.csproj -- --seed-open-library
 ```
 
-Sample/generated rows are marked `IsSample=true` by the migration and are hidden by default. Set `INCLUDE_SAMPLE_DATA=true` or `LibrarySettings__IncludeSampleData=true` to include them in queries.
+Configuration options:
+
+```text
+FilterJuvenileAndAdultContent=true
+DefaultCopiesAvailable=5
+INCLUDE_SAMPLE_DATA=false
+```
+
+Use `LibrarySettings__FilterJuvenileAndAdultContent=false` to turn off juvenile/adult filtering. Set `INCLUDE_SAMPLE_DATA=true` or `LibrarySettings__IncludeSampleData=true` to include generated sample rows in catalog queries.
+
+### Verified import results
+
+The 1,000-target import was run against `./SQLEXPRESS01/LibraryDb` and produced 1,433 distinct ISBN rows. All ten genres met the 80-book minimum:
+
+| Genre | Books |
+| --- | ---: |
+| Biography | 188 |
+| Business | 99 |
+| Fantasy | 163 |
+| History | 168 |
+| Mystery | 171 |
+| Programming | 104 |
+| Romance | 198 |
+| Science Fiction | 133 |
+| Self-Help | 109 |
+| Technology | 100 |
+
+Validation confirmed zero invalid Genre values, zero missing Subjects, and no duplicate ISBN rows. Rows imported before the filtering fix were preserved; newly imported rows use the default filters.
 
 ## Run as an MCP server
 
@@ -111,4 +164,6 @@ Keep protocol output on stdout; application logs are routed to stderr.
 - `src/LibraryMCPServer/Services` — catalog, loan, and Open Library logic
 - `src/LibraryMCPServer/Data` — EF Core context and seed data
 - `src/LibraryMCPServer/Migrations` — database schema migrations
+- `scripts/SeedOpenLibrary.ps1` — repeatable Open Library seed command
+- `scripts/InspectLibraryDb.sql` — SSMS inspection queries
 - `tests/LibraryMCPServer.Tests` — unit and tool contract tests
