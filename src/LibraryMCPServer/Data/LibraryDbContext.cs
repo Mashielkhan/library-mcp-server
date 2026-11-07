@@ -43,6 +43,10 @@ public class LibraryDbContext : DbContext
                 .IsRequired()
                 .HasMaxLength(50);
 
+            entity.Property(b => b.Subjects)
+                .IsRequired()
+                .HasColumnType("nvarchar(max)");
+
             entity.Property(b => b.PublishedYear)
                 .IsRequired();
 

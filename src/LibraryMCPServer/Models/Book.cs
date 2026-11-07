@@ -21,6 +21,8 @@ public class Book
     [StringLength(100, MinimumLength = 1, ErrorMessage = "Genre must be between 1 and 100 characters.")]
     public string Genre { get; set; } = string.Empty;
 
+    public string Subjects { get; set; } = string.Empty;
+
     [Range(1000, 2100, ErrorMessage = "PublishedYear must be between 1000 and 2100.")]
     public int PublishedYear { get; set; }
 

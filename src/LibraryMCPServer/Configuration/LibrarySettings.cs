@@ -23,4 +23,8 @@ public class LibrarySettings
     public bool EnableAutoMigrationAndSeed { get; set; } = true;
 
     public bool IncludeSampleData { get; set; } = false;
+
+    public bool FilterJuvenileAndAdultContent { get; set; } = true;
+
+    public int DefaultCopiesAvailable { get; set; } = 5;
 }
