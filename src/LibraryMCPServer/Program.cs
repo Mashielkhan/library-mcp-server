@@ -58,6 +58,7 @@ builder.Services.AddMemoryCache();
 builder.Services.AddSingleton(new HttpClient());
 builder.Services.AddScoped<OpenLibraryService>();
 builder.Services.AddScoped<OpenLibraryDumpLoader>();
+builder.Services.AddScoped<GoodbooksRatingsLoader>();
 
 // Register application services and tools
 builder.Services.AddScoped<ILibraryService, LibraryService>();
@@ -79,6 +80,16 @@ if (args.Contains("--load-open-library-authors", StringComparer.OrdinalIgnoreCas
     Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(lookupPath))!);
     await OpenLibraryDumpLoader.BuildAuthorLookupAsync(path, lookupPath);
     Console.Error.WriteLine($"Open Library author lookup created at {lookupPath}.");
+    return;
+}
+
+if (args.Contains("--load-ratings", StringComparer.OrdinalIgnoreCase))
+{
+    var path = GetCommandValue(args, "--load-ratings") ?? throw new ArgumentException("Usage: --load-ratings <goodbooks-10k-books.csv>");
+    using var scope = app.Services.CreateScope();
+    await scope.ServiceProvider.GetRequiredService<LibraryDbContext>().Database.MigrateAsync();
+    var matched = await scope.ServiceProvider.GetRequiredService<GoodbooksRatingsLoader>().LoadAsync(path);
+    Console.Error.WriteLine($"Goodbooks ratings load complete: matched {matched} existing books.");
     return;
 }
 
