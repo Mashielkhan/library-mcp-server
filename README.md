@@ -52,6 +52,17 @@ dotnet restore LibraryMCPServer.sln
 dotnet test LibraryMCPServer.sln
 ```
 
+### Connect with SQL Server Management Studio
+
+Use these SSMS connection settings on the development machine:
+
+- **Server type:** Database Engine
+- **Server name:** `.\SQLEXPRESS01`
+- **Authentication:** Windows Authentication
+- **Database:** `LibraryDb`
+
+The application uses the same server in `appsettings.json`. EF Core applies pending migrations at startup. The verification queries in `scripts/InspectLibraryDb.sql` can be opened and executed in SSMS.
+
 The first normal startup applies EF migrations and adds the curated authentic catalog when `LibrarySettings:EnableAutoMigrationAndSeed` is enabled. It does not delete existing rows.
 
 ## Real Open Library data
