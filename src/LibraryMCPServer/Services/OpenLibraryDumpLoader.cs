@@ -39,9 +39,10 @@ public sealed class OpenLibraryDumpLoader
         string? line;
         while ((line = await input.Reader.ReadLineAsync(cancellationToken)) is not null)
         {
+            var tab = line.IndexOf('\t');
             var record = ParseRecord(line);
-            if (record is null || !record.Value.TryGetProperty("key", out var keyElement) || !record.Value.TryGetProperty("name", out var nameElement)) continue;
-            var key = keyElement.GetString();
+            if (tab < 0 || record is null || !record.Value.TryGetProperty("name", out var nameElement)) continue;
+            var key = line[..tab];
             var name = nameElement.GetString();
             if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(name)) continue;
             await output.WriteLineAsync(JsonSerializer.Serialize(new { key, name }));

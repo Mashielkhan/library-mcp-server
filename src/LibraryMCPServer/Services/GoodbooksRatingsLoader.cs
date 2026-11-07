@@ -30,10 +30,11 @@ public sealed class GoodbooksRatingsLoader
             if (Utilities.IsbnValidator.IsValidIsbn13(isbn)) ratings[isbn] = rating;
         }
         var isbns = ratings.Keys.ToArray();
-        var books = await _db.Books.Where(x => isbns.Contains(x.ISBN)).ToListAsync(cancellationToken);
-        foreach (var book in books) book.Rating = ratings[book.ISBN];
+        var books = await _db.Books.ToListAsync(cancellationToken);
+        var matched = books.Where(x => ratings.ContainsKey(x.ISBN.Replace("-", string.Empty))).ToList();
+        foreach (var book in matched) book.Rating = ratings[book.ISBN.Replace("-", string.Empty)];
         await _db.SaveChangesAsync(cancellationToken);
-        return books.Count;
+        return matched.Count;
     }
 
     private static class CsvLine
