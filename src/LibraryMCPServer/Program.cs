@@ -30,6 +30,8 @@ builder.Logging.AddConsole(options =>
 // Configure options
 builder.Services.Configure<LibrarySettings>(
     builder.Configuration.GetSection(LibrarySettings.SectionName));
+builder.Services.Configure<OpenLibrarySettings>(
+    builder.Configuration.GetSection(OpenLibrarySettings.SectionName));
 
 // Configure EF Core with SQL Server
 builder.Services.AddDbContext<LibraryDbContext>((sp, options) =>

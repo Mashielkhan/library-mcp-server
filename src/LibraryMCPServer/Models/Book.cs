@@ -52,6 +52,10 @@ public class Book
 
     public bool IsSample { get; set; }
 
+    public string? OpenLibraryKey { get; set; }
+
+    public DateTime? LastSyncedAt { get; set; }
+
     // Navigation property for active and historical book loans
     public ICollection<BookLoan> Loans { get; set; } = new List<BookLoan>();
 }

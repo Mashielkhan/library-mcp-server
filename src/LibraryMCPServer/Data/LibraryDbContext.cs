@@ -84,6 +84,9 @@ public class LibraryDbContext : DbContext
 
             entity.HasIndex(b => b.Rating)
                 .HasDatabaseName("IX_Books_Rating");
+
+            entity.HasIndex(b => b.OpenLibraryKey)
+                .HasDatabaseName("IX_Books_OpenLibraryKey");
         });
 
         modelBuilder.Entity<BookLoan>(entity =>

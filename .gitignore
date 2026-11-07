@@ -5,6 +5,11 @@ publish/
 [Bb]uild/
 dist/
 out/
+data/
+*.gz
+*.csv
+*.tsv
+*.txt
 
 # Visual Studio / VS Code
 .vs/

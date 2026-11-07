@@ -63,6 +63,12 @@ namespace LibraryMCPServer.Migrations
                     b.Property<bool>("IsSample")
                         .HasColumnType("bit");
 
+                    b.Property<DateTime?>("LastSyncedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("OpenLibraryKey")
+                        .HasColumnType("nvarchar(450)");
+
                     b.Property<int>("PageCount")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("int")
@@ -94,6 +100,9 @@ namespace LibraryMCPServer.Migrations
                     b.HasIndex("ISBN")
                         .IsUnique()
                         .HasDatabaseName("IX_Books_ISBN");
+
+                    b.HasIndex("OpenLibraryKey")
+                        .HasDatabaseName("IX_Books_OpenLibraryKey");
 
                     b.HasIndex("Rating")
                         .HasDatabaseName("IX_Books_Rating");
