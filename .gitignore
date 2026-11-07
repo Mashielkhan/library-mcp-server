@@ -1,0 +1,55 @@
+# Build and Publish Output
+bin/
+obj/
+publish/
+[Bb]uild/
+dist/
+out/
+
+# Visual Studio / VS Code
+.vs/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+*.user
+*.userosscache
+*.sln.docstates
+*.suo
+
+# Test Results
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+
+# Database files
+*.mdf
+*.ldf
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment and sensitive local settings
+appsettings.Local.json
+*.local.json
+.env
+.env.*
+!.env.example
+
+# Node / Python tooling if used by future client applications
+node_modules/
+venv/
+.venv/
+__pycache__/
+
+# Rider / JetBrains
+.idea/
+*.DotSettings.user
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+.DS_Store
