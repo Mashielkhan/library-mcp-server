@@ -3,34 +3,47 @@ using System.Text.Json;
 using LibraryMCPServer.Data;
 using LibraryMCPServer.Models;
 using LibraryMCPServer.Utilities;
+using LibraryMCPServer.Configuration;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 
 namespace LibraryMCPServer.Services;
 
-/// <summary>
-/// Service that fetches real published book records live from the Open Library REST API.
-/// </summary>
 public sealed class OpenLibraryService
 {
-    public static readonly string[] SeedGenres =
-    [
-        "Mystery", "Romance", "Biography", "History", "Fantasy",
-        "Business", "Self-Help", "Programming", "Technology", "Science Fiction"
-    ];
+    public static readonly string[] SeedGenres = LibraryGenreRules.AllowedGenres;
+
+    private static readonly IReadOnlyDictionary<string, string[]> SearchQueries =
+        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Mystery"] = ["subject:mystery", "subject:detective mystery"],
+            ["Romance"] = ["subject:romance novel", "subject:love stories"],
+            ["Biography"] = ["subject:biography", "subject:autobiography memoir"],
+            ["History"] = ["subject:history books", "subject:world history"],
+            ["Fantasy"] = ["subject:fantasy fiction", "subject:epic fantasy"],
+            ["Business"] = ["subject:business management", "subject:entrepreneurship finance"],
+            ["Self-Help"] = ["subject:self-help personal development", "subject:self help"],
+            ["Programming"] = ["subject:computer programming", "subject:software development", "subject:programming languages"],
+            ["Technology"] = ["subject:technology computing", "subject:information technology", "subject:computer science technology"],
+            ["Science Fiction"] = ["subject:science fiction", "subject:space opera", "subject:cyberpunk science fiction"]
+        };
 
     private readonly HttpClient _httpClient;
     private readonly LibraryDbContext _context;
     private readonly IMemoryCache _cache;
     private readonly ILogger<OpenLibraryService> _logger;
+    private readonly bool _filterJuvenileAndAdultContent;
+    private readonly int _defaultCopiesAvailable;
 
-    public OpenLibraryService(HttpClient httpClient, LibraryDbContext context, IMemoryCache cache, ILogger<OpenLibraryService> logger)
+    public OpenLibraryService(HttpClient httpClient, LibraryDbContext context, IMemoryCache cache, ILogger<OpenLibraryService> logger, LibrarySettings? settings = null)
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _context = context ?? throw new ArgumentNullException(nameof(context));
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _filterJuvenileAndAdultContent = settings?.FilterJuvenileAndAdultContent ?? true;
+        _defaultCopiesAvailable = Math.Max(1, settings?.DefaultCopiesAvailable ?? 5);
         if (_httpClient.DefaultRequestHeaders.UserAgent.Count == 0)
         {
             _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("LibraryMCPServer/1.0 (MCP library catalog)");
@@ -39,57 +52,77 @@ public sealed class OpenLibraryService
 
     public async Task<int> SeedAsync(int targetCount = 1000, int delayMilliseconds = 250, int retries = 3, CancellationToken cancellationToken = default)
     {
-        var perGenre = Math.Max(1, (int)Math.Ceiling(targetCount / (double)SeedGenres.Length));
-        var imported = 0;
+        var targetPerGenre = Math.Max(1, (int)Math.Ceiling(targetCount / (double)SeedGenres.Length));
+        var newBooks = 0;
         foreach (var genre in SeedGenres)
         {
-            var docs = await SearchAsync(genre, perGenre, delayMilliseconds, retries, cancellationToken);
-            foreach (var doc in docs)
+            var accepted = 0;
+            var seenIsbns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var query in SearchQueries[genre])
             {
-                var book = ParseBook(doc, genre);
-                if (book is null) continue;
-
-                var existing = await _context.Books.FirstOrDefaultAsync(b => b.ISBN == book.ISBN, cancellationToken);
-                if (existing is not null)
+                if (accepted >= targetPerGenre) break;
+                var docs = await SearchAsync(query, Math.Min(100, targetPerGenre * 2), delayMilliseconds, retries, cancellationToken);
+                foreach (var doc in docs)
                 {
-                    existing.CopiesAvailable++;
-                    existing.Genre = MergeGenres(existing.Genre, book.Genre);
-                    continue;
+                    var book = ParseBook(doc, genre);
+                    if (book is null || !seenIsbns.Add(book.ISBN)) continue;
+                    await UpsertAsync(book, cancellationToken, isNew => newBooks += isNew ? 1 : 0);
+                    accepted++;
+                    if (accepted >= targetPerGenre) break;
                 }
-
-                await _context.Books.AddAsync(book, cancellationToken);
-                imported++;
             }
-
             await _context.SaveChangesAsync(cancellationToken);
-            _cache.Remove("library_stats_cache");
-            _cache.Remove("library_genres_cache");
+            _logger.LogInformation("Open Library genre {Genre}: processed {Accepted} records; target was {Target}", genre, accepted, targetPerGenre);
         }
-
-        return imported;
+        ClearCaches();
+        return newBooks;
     }
 
     public async Task<(int importedCount, IReadOnlyList<string> importedTitles)> ImportBooksAsync(string query, int limit = 10, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Query keyword cannot be empty.", nameof(query));
-        var docs = await SearchAsync(query.Trim(), Math.Clamp(limit, 1, 50), 250, 3, cancellationToken);
+        var requestedGenre = LibraryGenreRules.MapGenre(query, query);
+        var docs = await SearchAsync(query.Trim(), Math.Clamp(limit, 1, 100), 250, 3, cancellationToken);
         var titles = new List<string>();
         foreach (var doc in docs)
         {
-            var book = ParseBook(doc, query.Trim());
+            var book = ParseBook(doc, requestedGenre);
             if (book is null) continue;
-            var existing = await _context.Books.FirstOrDefaultAsync(b => b.ISBN == book.ISBN, cancellationToken);
-            if (existing is not null) { existing.CopiesAvailable++; continue; }
-            await _context.Books.AddAsync(book, cancellationToken);
-            titles.Add(book.Title);
+            var isNew = await UpsertAsync(book, cancellationToken, isAdded =>
+            {
+                if (isAdded) titles.Add(book.Title);
+            });
         }
-        if (titles.Count > 0)
-        {
-            await _context.SaveChangesAsync(cancellationToken);
-            _cache.Remove("library_stats_cache");
-            _cache.Remove("library_genres_cache");
-        }
+        if (titles.Count > 0) await _context.SaveChangesAsync(cancellationToken);
+        else if (_context.ChangeTracker.HasChanges()) await _context.SaveChangesAsync(cancellationToken);
+        ClearCaches();
         return (titles.Count, titles);
+    }
+
+    private async Task<bool> UpsertAsync(Book book, CancellationToken cancellationToken, Action<bool> onNew)
+    {
+        var existing = await _context.Books.FirstOrDefaultAsync(b => b.ISBN == book.ISBN, cancellationToken);
+        if (existing is null)
+        {
+            await _context.Books.AddAsync(book, cancellationToken);
+            onNew(true);
+            return true;
+        }
+
+        existing.Title = book.Title;
+        existing.Author = book.Author;
+        existing.Genre = book.Genre;
+        existing.Subjects = book.Subjects;
+        existing.PublishedYear = book.PublishedYear;
+        existing.Rating = book.Rating;
+        existing.PageCount = book.PageCount;
+        existing.CoverImageUrl = book.CoverImageUrl;
+        existing.Description = book.Description;
+        existing.CopiesAvailable = _defaultCopiesAvailable;
+        existing.IsAuthentic = true;
+        existing.IsSample = false;
+        onNew(false);
+        return false;
     }
 
     private async Task<List<JsonElement>> SearchAsync(string query, int limit, int delayMilliseconds, int retries, CancellationToken cancellationToken)
@@ -122,31 +155,31 @@ public sealed class OpenLibraryService
         }
     }
 
-    private static Book? ParseBook(JsonElement item, string genre)
+    private Book? ParseBook(JsonElement item, string requestedGenre)
     {
-        var title = GetString(item, "title");
-        var author = GetArrayString(item, "author_name");
+        var title = GetString(item, "title")?.Trim();
+        var author = GetArrayString(item, "author_name")?.Trim();
         var isbn = GetArrayString(item, "isbn", IsbnValidator.IsValidIsbn13);
+        var subjects = GetArrayStrings(item, "subject");
         if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(author) || string.IsNullOrWhiteSpace(isbn)) return null;
-
+        if (LibraryGenreRules.ShouldRejectSubjects(subjects, requestedGenre, _filterJuvenileAndAdultContent)) return null;
         if (!item.TryGetProperty("first_publish_year", out var yearElement) || !yearElement.TryGetInt32(out var year) || year is < 1000 or > 2100) return null;
+
+        var genre = LibraryGenreRules.MapGenre(requestedGenre, string.Join(", ", subjects));
         var pageCount = item.TryGetProperty("number_of_pages_median", out var pages) && pages.TryGetInt32(out var count) && count > 0 ? Math.Clamp(count, 1, 10000) : 1;
         double? rating = item.TryGetProperty("ratings_average", out var ratingElement) && ratingElement.TryGetDouble(out var value) && value is >= 0 and <= 5 ? Math.Round(value, 2) : null;
         var cleanIsbn = isbn.Replace("-", string.Empty);
-        var subjects = item.TryGetProperty("subject", out var subjectElement) && subjectElement.ValueKind == JsonValueKind.Array
-            ? subjectElement.EnumerateArray().Select(x => x.GetString()).Where(x => !string.IsNullOrWhiteSpace(x)).Take(3).ToList()
-            : [];
-        var fullGenre = MergeGenres(genre, string.Join(", ", subjects));
         var description = GetString(item, "first_sentence") ?? string.Empty;
 
         return new Book
         {
-            Title = title.Trim()[..Math.Min(title.Trim().Length, 200)],
-            Author = author.Trim()[..Math.Min(author.Trim().Length, 150)],
-            Genre = fullGenre[..Math.Min(fullGenre.Length, 50)],
+            Title = title[..Math.Min(title.Length, 200)],
+            Author = author[..Math.Min(author.Length, 150)],
+            Genre = genre,
+            Subjects = LibraryGenreRules.NormalizeSubjects(subjects),
             PublishedYear = year,
             ISBN = IsbnValidator.FormatIsbn13(cleanIsbn),
-            CopiesAvailable = 1,
+            CopiesAvailable = _defaultCopiesAvailable,
             Rating = rating,
             PageCount = pageCount,
             CoverImageUrl = $"https://covers.openlibrary.org/b/isbn/{cleanIsbn}-M.jpg",
@@ -156,17 +189,24 @@ public sealed class OpenLibraryService
         };
     }
 
+    private void ClearCaches()
+    {
+        _cache.Remove("library_stats_cache");
+        _cache.Remove("library_genres_cache");
+    }
+
     private static string? GetString(JsonElement element, string property)
     {
         if (!element.TryGetProperty(property, out var value)) return null;
         return value.ValueKind == JsonValueKind.String ? value.GetString() : value.ToString();
     }
 
-    private static string? GetArrayString(JsonElement element, string property, Func<string, bool>? predicate = null)
-    {
-        if (!element.TryGetProperty(property, out var value) || value.ValueKind != JsonValueKind.Array) return null;
-        return value.EnumerateArray().Select(x => x.GetString()).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x) && (predicate is null || predicate(x)));
-    }
+    private static string? GetArrayString(JsonElement element, string property, Func<string, bool>? predicate = null) =>
+        GetArrayStrings(element, property).FirstOrDefault(x => predicate is null || predicate(x));
 
-    private static string MergeGenres(string first, string second) => string.Join(", ", (first + ", " + second).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase));
+    private static IReadOnlyList<string> GetArrayStrings(JsonElement element, string property)
+    {
+        if (!element.TryGetProperty(property, out var value) || value.ValueKind != JsonValueKind.Array) return [];
+        return value.EnumerateArray().Select(x => x.GetString()).Where(x => !string.IsNullOrWhiteSpace(x)).Cast<string>().ToArray();
+    }
 }
