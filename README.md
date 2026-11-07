@@ -67,6 +67,10 @@ The application uses the same server in `appsettings.json`. Open `scripts/Inspec
 
 ## Open Library import
 
+For bulk catalog expansion, download the free monthly Open Library editions and authors dumps from https://openlibrary.org/developers/dumps. Build the author lookup first, then load the editions dump. The loader reads gzip files line by line and never uses the Open Library API for bulk ingestion.
+
+Goodbooks-10k ratings can be loaded from its free `books.csv` dataset (commonly distributed through the Goodreads/Goodbooks-10k dataset repository). Check the dataset's current license and terms yourself before using or redistributing it.
+
 The seed command imports books across these ten normalized genres:
 
 - Mystery
@@ -92,7 +96,7 @@ The importer:
 - Rejects configured nonfiction markers for Fantasy and Romance.
 - Uses the API rating when available and otherwise stores `null`.
 - Updates an existing ISBN in place on re-import instead of inserting a duplicate or adding copies.
-- Sets imported records to the fixed `DefaultCopiesAvailable` value, which defaults to 5.
+- Preserves `CopiesAvailable` on existing records and uses the fixed default only for new records.
 - Retries transient API failures and rate-limits requests.
 
 Run approximately 1,000 target records:
@@ -117,6 +121,18 @@ INCLUDE_SAMPLE_DATA=false
 ```
 
 Use `LibrarySettings__FilterJuvenileAndAdultContent=false` to turn off juvenile/adult filtering. Set `INCLUDE_SAMPLE_DATA=true` or `LibrarySettings__IncludeSampleData=true` to include generated sample rows in catalog queries.
+
+### Free-source bulk commands
+
+Download the authors and editions dump files yourself; they are large (the editions dump is several GB compressed) and are intentionally ignored by Git. Then run:
+
+```powershell
+dotnet run --project src/LibraryMCPServer/LibraryMCPServer.csproj -- --load-open-library-authors C:\data\ol_dump_authors.txt.gz C:\data\authors.lookup.jsonl
+dotnet run --project src/LibraryMCPServer/LibraryMCPServer.csproj -- --load-open-library-dump C:\data\ol_dump_editions.txt.gz --authors-lookup C:\data\authors.lookup.jsonl --max-rows 200000
+dotnet run --project src/LibraryMCPServer/LibraryMCPServer.csproj -- --load-ratings C:\data\books.csv
+```
+
+The editions loader reports rows read, kept, skip reasons, inserts, updates, and per-genre counts. It is safe to rerun by ISBN, does not touch loans, and stops before the database reaches 8 GB. SQL Server Express has a 10 GB database-file limit, so leave headroom for indexes and normal operation.
 
 ### Verified import results
 

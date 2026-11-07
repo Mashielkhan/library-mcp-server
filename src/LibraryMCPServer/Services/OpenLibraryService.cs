@@ -123,9 +123,9 @@ public sealed class OpenLibraryService
         existing.PageCount = book.PageCount;
         existing.CoverImageUrl = book.CoverImageUrl;
         existing.Description = book.Description;
-        existing.CopiesAvailable = _defaultCopiesAvailable;
         existing.IsAuthentic = true;
         existing.IsSample = false;
+        existing.LastSyncedAt = DateTime.UtcNow;
         onNew(false);
         return false;
     }
