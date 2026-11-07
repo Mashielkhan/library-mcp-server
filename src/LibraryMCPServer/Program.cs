@@ -32,6 +32,7 @@ builder.Services.Configure<LibrarySettings>(
     builder.Configuration.GetSection(LibrarySettings.SectionName));
 builder.Services.Configure<OpenLibrarySettings>(
     builder.Configuration.GetSection(OpenLibrarySettings.SectionName));
+builder.Services.AddSingleton(builder.Configuration.GetSection(LibrarySettings.SectionName).Get<LibrarySettings>() ?? new LibrarySettings());
 
 // Configure EF Core with SQL Server
 builder.Services.AddDbContext<LibraryDbContext>((sp, options) =>
@@ -56,6 +57,7 @@ builder.Services.AddMemoryCache();
 // Register HTTP client and Open Library API importer
 builder.Services.AddSingleton(new HttpClient());
 builder.Services.AddScoped<OpenLibraryService>();
+builder.Services.AddScoped<OpenLibraryDumpLoader>();
 
 // Register application services and tools
 builder.Services.AddScoped<ILibraryService, LibraryService>();
@@ -69,6 +71,32 @@ builder.Services
 
 var app = builder.Build();
 
+if (args.Contains("--load-open-library-authors", StringComparer.OrdinalIgnoreCase))
+{
+    var path = GetCommandValue(args, "--load-open-library-authors");
+    var lookupPath = args.SkipWhile(x => !x.Equals("--load-open-library-authors", StringComparison.OrdinalIgnoreCase)).Skip(2).FirstOrDefault() ?? "data/open-library-authors.lookup.jsonl";
+    if (path is null) throw new ArgumentException("Usage: --load-open-library-authors <authors-dump-path> [lookup-output-path]");
+    Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(lookupPath))!);
+    await OpenLibraryDumpLoader.BuildAuthorLookupAsync(path, lookupPath);
+    Console.Error.WriteLine($"Open Library author lookup created at {lookupPath}.");
+    return;
+}
+
+if (args.Contains("--load-open-library-dump", StringComparer.OrdinalIgnoreCase))
+{
+    var path = GetCommandValue(args, "--load-open-library-dump");
+    if (path is null) throw new ArgumentException("Usage: --load-open-library-dump <editions-dump-path> [--max-rows N] [--authors-lookup path]");
+    var maxRows = GetIntOption(args, "--max-rows", 200000);
+    var lookup = GetOption(args, "--authors-lookup") ?? "data/open-library-authors.lookup.jsonl";
+    using var scope = app.Services.CreateScope();
+    await scope.ServiceProvider.GetRequiredService<LibraryDbContext>().Database.MigrateAsync();
+    var report = await scope.ServiceProvider.GetRequiredService<OpenLibraryDumpLoader>().LoadEditionsAsync(path, lookup, maxRows);
+    Console.Error.WriteLine($"Open Library dump complete: rows read={report.RowsRead}, kept={report.Kept}, inserted={report.Inserted}, updated={report.Updated}.");
+    Console.Error.WriteLine($"Skipped: {string.Join(", ", report.Skipped.Select(x => $"{x.Key}={x.Value}"))}");
+    Console.Error.WriteLine($"Genres: {string.Join(", ", report.BooksPerGenre.Select(x => $"{x.Key}={x.Value}"))}");
+    return;
+}
+
 if (args.Contains("--seed-open-library", StringComparer.OrdinalIgnoreCase))
 {
     using var seedScope = app.Services.CreateScope();
@@ -80,6 +108,16 @@ if (args.Contains("--seed-open-library", StringComparer.OrdinalIgnoreCase))
     Console.Error.WriteLine($"Open Library seed complete: imported {imported} new books.");
     return;
 }
+
+static string? GetCommandValue(string[] args, string command) => GetOption(args, command);
+
+static string? GetOption(string[] args, string option)
+{
+    var index = Array.FindIndex(args, x => x.Equals(option, StringComparison.OrdinalIgnoreCase));
+    return index >= 0 && index + 1 < args.Length && !args[index + 1].StartsWith("--", StringComparison.Ordinal) ? args[index + 1] : null;
+}
+
+static int GetIntOption(string[] args, string option, int fallback) => int.TryParse(GetOption(args, option), out var value) ? value : fallback;
 
 // Controlled local development initialization and seeding
 await InitializeDatabaseAsync(app);
