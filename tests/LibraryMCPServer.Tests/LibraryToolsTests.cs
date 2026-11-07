@@ -107,4 +107,59 @@ public class LibraryToolsTests
         Assert.Equal(17, stats.TotalAvailableCopies);
         Assert.Equal(3, stats.GenreBreakdown.Count);
     }
+
+    [Fact]
+    public async Task EveryReadListTool_ReturnsPaginationMetadata()
+    {
+        using var context = CreateInMemoryContext();
+        var tools = CreateTools(context);
+
+        var genres = JsonSerializer.Serialize(await tools.ListAvailableGenresAsync(page: 1, pageSize: 1));
+        var lowStock = JsonSerializer.Serialize(await tools.GetLowStockBooksAsync(threshold: 5, page: 1, pageSize: 1));
+        var loans = JsonSerializer.Serialize(await tools.GetActiveLoansAsync(page: 1, pageSize: 1));
+
+        Assert.Contains("totalCount", genres);
+        Assert.Contains("totalPages", lowStock);
+        Assert.Contains("hasMore", loans);
+    }
+
+    [Fact]
+    public async Task AdvancedSearch_MinRatingFiltersItemsAndTotalCount()
+    {
+        using var context = CreateInMemoryContext();
+        var tools = CreateTools(context);
+
+        var json = JsonSerializer.Serialize(await tools.SearchBooksAdvancedAsync(minRating: 4.8));
+
+        Assert.Contains("\"totalCount\":1", json);
+        Assert.Contains("The Way of Kings", json);
+        Assert.DoesNotContain("Animal Farm", json);
+    }
+
+    [Fact]
+    public async Task SearchBooks_EmptyTerm_ReturnsClearError()
+    {
+        using var context = CreateInMemoryContext();
+        var json = JsonSerializer.Serialize(await CreateTools(context).SearchBooksAsync(" "));
+
+        Assert.Contains("Search term cannot be empty", json);
+    }
+
+    [Fact]
+    public async Task BookAndLoanErrors_ReturnClearFailures()
+    {
+        using var context = CreateInMemoryContext();
+        var tools = CreateTools(context);
+        var unavailable = new Book { Title = "Unavailable", Author = "Author", Genre = "Mystery", PublishedYear = 2020, ISBN = "978-099", CopiesAvailable = 0, PageCount = 100 };
+        context.Books.Add(unavailable);
+        await context.SaveChangesAsync();
+
+        var unknown = JsonSerializer.Serialize(await tools.GetBookDetailsAsync(99999));
+        var noCopies = JsonSerializer.Serialize(await tools.BorrowBookAsync(unavailable.Id, "Reader"));
+        var notBorrowed = JsonSerializer.Serialize(await tools.ReturnBookAsync(unavailable.Id, "Reader"));
+
+        Assert.Contains("No book found", unknown);
+        Assert.Contains("No inventory available", noCopies);
+        Assert.Contains("No active loan found", notBorrowed);
+    }
 }
