@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "library-mcp-server": {
+      "command": "C:\\Users\\hp\\Documents\\Projects\\MCP Server\\publish\\win-x64\\LibraryMCPServer.exe",
+      "args": []
+    }
+  }
+}
