@@ -11,7 +11,6 @@ public class LibrarySettings
     /// Maximum number of records returned by search and list tools by default.
     /// </summary>
     public int MaxSearchResults { get; set; } = 10;
-
     /// <summary>
     /// Default number of fictional records to seed in development mode.
     /// </summary>
