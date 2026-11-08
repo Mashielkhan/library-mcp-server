@@ -134,6 +134,10 @@ dotnet run --project src/LibraryMCPServer/LibraryMCPServer.csproj -- --load-rati
 
 The editions loader reports rows read, kept, skip reasons, inserts, updates, and per-genre counts. It is safe to rerun by ISBN, does not touch loans, and stops before the database reaches 8 GB. SQL Server Express has a 10 GB database-file limit, so leave headroom for indexes and normal operation.
 
+The live MCP tools are `search_open_library(query, page, pageSize)` (read-only and returns `inLibrary`) and `add_book_by_isbn(isbn, copies)` (validates and upserts one edition). Live requests use one shared client with a 24-hour memory cache, rate limiting, retry/backoff for 429 and 5xx responses, `Retry-After`, and a 30-second timeout. Set `OpenLibrary__ContactEmail` to a real contact address locally; the placeholder is not intended for production use.
+
+Background refresh is disabled by default. Enable it with `OpenLibrary__EnableBackgroundRefresh=true`; it refreshes stale Open Library metadata in small batches according to `OpenLibrary__RefreshDays`, `OpenLibrary__BatchSize`, and `OpenLibrary__MaxConsecutiveErrors`.
+
 ### Verified import results
 
 The 1,000-target import was run against `./SQLEXPRESS01/LibraryDb` and produced 1,433 distinct ISBN rows. All ten genres met the 80-book minimum:

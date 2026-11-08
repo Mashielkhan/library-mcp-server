@@ -53,8 +53,9 @@ public sealed class OpenLibraryService
         if (_httpClient.DefaultRequestHeaders.UserAgent.Count == 0)
         {
             var contact = string.IsNullOrWhiteSpace(_openLibrarySettings.ContactEmail) ? "without-email" : _openLibrarySettings.ContactEmail;
-            _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd($"LibraryMCPServer ({contact})");
+            _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd($"LibraryMCPServer (OpenLibrary:{contact})");
         }
+        _httpClient.Timeout = TimeSpan.FromSeconds(30);
     }
 
     public async Task<int> RefreshStaleBooksAsync(CancellationToken cancellationToken = default)
