@@ -198,6 +198,7 @@ public sealed class LibraryTools
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to retrieve library statistics.");
+            Console.Error.WriteLine($"get_library_stats failed: {ex}");
             return new { error = "A database error occurred while calculating library statistics." };
         }
     }
@@ -401,12 +402,13 @@ public sealed class LibraryTools
 
         try
         {
-            var (importedCount, titles) = await _openLibraryService.ImportBooksAsync(query, limit, cancellationToken);
+            var (importedCount, titles, rejectedCount) = await _openLibraryService.ImportBooksAsync(query, limit, cancellationToken);
             return new
             {
                 success = true,
                 message = $"Successfully imported {importedCount} authentic published book(s) from Open Library API.",
                 importedCount,
+                rejectedCount,
                 titles
             };
         }
@@ -427,7 +429,7 @@ public sealed class LibraryTools
 
     [McpServerTool(Name = "add_book_by_isbn", ReadOnly = false, Idempotent = true)]
     [Description("Fetches and validates one Open Library edition by ISBN-13 and upserts it into the local catalog.")]
-    public async Task<object> AddBookByIsbnAsync(string isbn, int copies = 1, CancellationToken cancellationToken = default)
+    public async Task<object> AddBookByIsbnAsync(string isbn, int copies = 0, CancellationToken cancellationToken = default)
     {
         try { return await _openLibraryService.AddBookByIsbnAsync(isbn, copies, cancellationToken); }
         catch (Exception ex) { _logger.LogError(ex, "Failed to add Open Library ISBN {Isbn}", isbn); return new { error = ex.Message }; }

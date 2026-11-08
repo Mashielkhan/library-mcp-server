@@ -20,6 +20,30 @@ public class LibraryToolsTests
         return new LibraryTools(service, openLibrary, NullLogger<LibraryTools>.Instance);
     }
 
+    [Fact]
+    public async Task StatsAndLowStock_WithLoansAndSampleRows_ReturnResults()
+    {
+        using var context = CreateInMemoryContext();
+
+        var catalogBook = new Book { Title = "Catalog", Author = "Author", Genre = "Fantasy", PublishedYear = 2020, ISBN = "978-101", CopiesAvailable = 2, PageCount = 100, IsSample = false };
+        var sampleBook = new Book { Title = "Sample", Author = "Author", Genre = "Fantasy", PublishedYear = 2020, ISBN = "978-102", CopiesAvailable = 1, PageCount = 100, IsSample = true };
+        await context.Books.AddRangeAsync(catalogBook, sampleBook);
+        await context.SaveChangesAsync();
+        await context.BookLoans.AddRangeAsync(
+            new BookLoan { BookId = catalogBook.Id, BorrowerName = "Reader", IsReturned = false },
+            new BookLoan { BookId = sampleBook.Id, BorrowerName = "Sample Reader", IsReturned = false },
+            new BookLoan { BookId = catalogBook.Id, BorrowerName = "Former Reader", IsReturned = true });
+        await context.SaveChangesAsync();
+
+        var json = JsonSerializer.Serialize(await CreateTools(context).GetLibraryStatsAsync());
+        var lowStock = JsonSerializer.Serialize(await CreateTools(context).GetLowStockBooksAsync(threshold: 2));
+
+        Assert.Contains("ActiveLoansCount", json);
+        Assert.Contains("Catalog", lowStock);
+        Assert.DoesNotContain("A database error occurred", json);
+        Assert.DoesNotContain("A database error occurred", lowStock);
+    }
+
     private static LibraryDbContext CreateInMemoryContext()
     {
         var options = new DbContextOptionsBuilder<LibraryDbContext>()
@@ -28,9 +52,9 @@ public class LibraryToolsTests
         var context = new LibraryDbContext(options);
 
         context.Books.AddRange(
-            new Book { Title = "1984", Author = "George Orwell", Genre = "Science Fiction", PublishedYear = 1949, ISBN = "978-001", CopiesAvailable = 5, Rating = 4.7, PageCount = 328 },
-            new Book { Title = "Animal Farm", Author = "George Orwell", Genre = "History", PublishedYear = 1945, ISBN = "978-002", CopiesAvailable = 2, Rating = 4.6, PageCount = 140 },
-            new Book { Title = "The Way of Kings", Author = "Brandon Sanderson", Genre = "Fantasy", PublishedYear = 2010, ISBN = "978-003", CopiesAvailable = 10, Rating = 4.9, PageCount = 1007 }
+            new Book { Title = "1984", Author = "George Orwell", Genre = "Science Fiction", PublishedYear = 1949, ISBN = "978-001", CopiesAvailable = 5, Rating = 4.7, RatingCount = 10, PageCount = 328 },
+            new Book { Title = "Animal Farm", Author = "George Orwell", Genre = "History", PublishedYear = 1945, ISBN = "978-002", CopiesAvailable = 2, Rating = 4.6, RatingCount = 10, PageCount = 140 },
+            new Book { Title = "The Way of Kings", Author = "Brandon Sanderson", Genre = "Fantasy", PublishedYear = 2010, ISBN = "978-003", CopiesAvailable = 10, Rating = 4.9, RatingCount = 10, PageCount = 1007 }
         );
         context.SaveChanges();
 

@@ -60,6 +60,7 @@ builder.Services.AddSingleton(new HttpClient());
 builder.Services.AddScoped<OpenLibraryService>();
 builder.Services.AddScoped<OpenLibraryDumpLoader>();
 builder.Services.AddScoped<GoodbooksRatingsLoader>();
+builder.Services.AddScoped<LibraryDataCleanupService>();
 builder.Services.AddHostedService<OpenLibraryRefreshService>();
 
 // Register application services and tools
@@ -82,6 +83,27 @@ if (args.Contains("--load-open-library-authors", StringComparer.OrdinalIgnoreCas
     Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(lookupPath))!);
     await OpenLibraryDumpLoader.BuildAuthorLookupAsync(path, lookupPath);
     Console.Error.WriteLine($"Open Library author lookup created at {lookupPath}.");
+    return;
+}
+
+if (args.Contains("--normalize-authors", StringComparer.OrdinalIgnoreCase))
+{
+    using var scope = app.Services.CreateScope();
+    await scope.ServiceProvider.GetRequiredService<LibraryDbContext>().Database.MigrateAsync();
+    var changed = await scope.ServiceProvider.GetRequiredService<LibraryDataCleanupService>().NormalizeAuthorsAsync();
+    Console.Error.WriteLine($"Author cleanup complete: normalized {changed} books.");
+    return;
+}
+
+if (args.Contains("--normalize-default-copies", StringComparer.OrdinalIgnoreCase))
+{
+    var oldDefault = GetIntOption(args, "--old-default", 5);
+    using var scope = app.Services.CreateScope();
+    var settings = scope.ServiceProvider.GetRequiredService<LibrarySettings>();
+    await scope.ServiceProvider.GetRequiredService<LibraryDbContext>().Database.MigrateAsync();
+    var changed = await scope.ServiceProvider.GetRequiredService<LibraryDataCleanupService>()
+        .NormalizeDefaultCopiesAsync(oldDefault, Math.Max(1, settings.DefaultCopies));
+    Console.Error.WriteLine($"Default-copy cleanup complete: updated {changed} books; books with active loans were skipped.");
     return;
 }
 

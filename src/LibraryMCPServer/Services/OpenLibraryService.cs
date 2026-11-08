@@ -48,7 +48,7 @@ public sealed class OpenLibraryService
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _filterJuvenileAndAdultContent = settings?.FilterJuvenileAndAdultContent ?? true;
-        _defaultCopiesAvailable = Math.Max(1, settings?.DefaultCopiesAvailable ?? 5);
+        _defaultCopiesAvailable = Math.Max(1, settings?.DefaultCopies ?? 3);
         _openLibrarySettings = openLibrarySettings ?? new OpenLibrarySettings();
         if (_httpClient.DefaultRequestHeaders.UserAgent.Count == 0)
         {
@@ -95,7 +95,7 @@ public sealed class OpenLibraryService
         return results;
     }
 
-    public async Task<Book> AddBookByIsbnAsync(string isbn, int copies = 1, CancellationToken cancellationToken = default)
+    public async Task<Book> AddBookByIsbnAsync(string isbn, int copies = 0, CancellationToken cancellationToken = default)
     {
         if (!IsbnValidator.IsValidIsbn13(isbn)) throw new ArgumentException("A valid ISBN-13 is required.", nameof(isbn));
         var clean = IsbnValidator.FormatIsbn13(isbn);
@@ -103,14 +103,18 @@ public sealed class OpenLibraryService
         var edition = document.RootElement;
         var title = GetString(edition, "title");
         var year = ParseYear(edition);
+        if (HasExplicitYear(edition) && year is null) throw new InvalidDataException("Open Library returned an out-of-range publication year.");
         var subjects = GetArrayStrings(edition, "subjects");
+        var languages = GetArrayStrings(edition, "languages");
+        if (!IsEnglish(languages)) throw new InvalidDataException("The edition was rejected because it is not English.");
         var authorKey = edition.TryGetProperty("authors", out var authors) && authors.ValueKind == JsonValueKind.Array ? authors.EnumerateArray().Select(x => GetString(x, "key")).FirstOrDefault(x => x is not null) : null;
         if (title is null || year is null || authorKey is null) throw new InvalidDataException("Open Library returned an incomplete edition.");
         var author = await ResolveAuthorNameAsync(authorKey, cancellationToken);
         if (author is null) throw new InvalidDataException("Open Library author could not be resolved.");
         var genre = LibraryGenreRules.MapGenre(null, string.Join(", ", subjects));
         if (LibraryGenreRules.ShouldRejectSubjects(subjects, genre)) throw new InvalidDataException("The edition subjects were filtered.");
-        var book = new Book { ISBN = clean, Title = title[..Math.Min(200, title.Length)], Author = author[..Math.Min(150, author.Length)], Genre = genre, Subjects = LibraryGenreRules.NormalizeSubjects(subjects), PublishedYear = year.Value, CopiesAvailable = Math.Max(1, copies), PageCount = GetInt(edition, "number_of_pages") ?? 300, CoverImageUrl = $"https://covers.openlibrary.org/b/isbn/{clean}-M.jpg", IsAuthentic = true, IsSample = false, OpenLibraryKey = GetString(edition, "key"), LastSyncedAt = DateTime.UtcNow };
+        author = AuthorNameNormalizer.Normalize(author);
+        var book = new Book { ISBN = clean, Title = title[..Math.Min(200, title.Length)], Author = author[..Math.Min(150, author.Length)], Genre = genre, Subjects = LibraryGenreRules.NormalizeSubjects(subjects), PublishedYear = year, CopiesAvailable = copies > 0 ? copies : _defaultCopiesAvailable, PageCount = GetInt(edition, "number_of_pages") ?? 300, CoverImageUrl = $"https://covers.openlibrary.org/b/isbn/{clean}-M.jpg", IsAuthentic = true, IsSample = false, OpenLibraryKey = GetString(edition, "key"), LastSyncedAt = DateTime.UtcNow };
         await UpsertAsync(book, cancellationToken, _ => { });
         await _context.SaveChangesAsync(cancellationToken);
         return await _context.Books.AsNoTracking().SingleAsync(x => x.ISBN == clean, cancellationToken);
@@ -140,7 +144,15 @@ public sealed class OpenLibraryService
         return GetString(document.RootElement, "name");
     }
 
-    private static int? ParseYear(JsonElement value) { var text = GetString(value, "publish_date"); return text is not null && int.TryParse(new string(text.Take(4).ToArray()), out var year) ? year : null; }
+    private static int? ParseYear(JsonElement value)
+    {
+        var text = GetString(value, "publish_date");
+        if (text is null || !int.TryParse(new string(text.Take(4).ToArray()), out var year)) return null;
+        return IsValidYear(year) ? year : null;
+    }
+
+    private static bool HasExplicitYear(JsonElement value) => GetString(value, "publish_date") is not null;
+    private static bool IsValidYear(int year) => year >= 1450 && year <= DateTime.UtcNow.Year + 1;
     private static int? GetInt(JsonElement value, string property) => value.TryGetProperty(property, out var element) && element.TryGetInt32(out var result) ? result : null;
 
     public async Task<int> SeedAsync(int targetCount = 1000, int delayMilliseconds = 250, int retries = 3, CancellationToken cancellationToken = default)
@@ -176,16 +188,17 @@ public sealed class OpenLibraryService
         return newBooks;
     }
 
-    public async Task<(int importedCount, IReadOnlyList<string> importedTitles)> ImportBooksAsync(string query, int limit = 10, CancellationToken cancellationToken = default)
+    public async Task<(int importedCount, IReadOnlyList<string> importedTitles, int rejectedCount)> ImportBooksAsync(string query, int limit = 10, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Query keyword cannot be empty.", nameof(query));
         var requestedGenre = LibraryGenreRules.MapGenre(query, query);
         var docs = await SearchAsync(query.Trim(), Math.Clamp(limit, 1, 100), 0, 250, 3, cancellationToken);
         var titles = new List<string>();
+        var rejected = 0;
         foreach (var doc in docs)
         {
             var book = ParseBook(doc, requestedGenre);
-            if (book is null) continue;
+            if (book is null) { rejected++; continue; }
             var isNew = await UpsertAsync(book, cancellationToken, isAdded =>
             {
                 if (isAdded) titles.Add(book.Title);
@@ -194,7 +207,7 @@ public sealed class OpenLibraryService
         if (titles.Count > 0) await _context.SaveChangesAsync(cancellationToken);
         else if (_context.ChangeTracker.HasChanges()) await _context.SaveChangesAsync(cancellationToken);
         ClearCaches();
-        return (titles.Count, titles);
+        return (titles.Count, titles, rejected);
     }
 
     private async Task<bool> UpsertAsync(Book book, CancellationToken cancellationToken, Action<bool> onNew)
@@ -213,6 +226,7 @@ public sealed class OpenLibraryService
         existing.Subjects = book.Subjects;
         existing.PublishedYear = book.PublishedYear;
         existing.Rating = book.Rating;
+        existing.RatingCount = book.RatingCount;
         existing.PageCount = book.PageCount;
         existing.CoverImageUrl = book.CoverImageUrl;
         existing.Description = book.Description;
@@ -225,7 +239,7 @@ public sealed class OpenLibraryService
 
     private async Task<List<JsonElement>> SearchAsync(string query, int limit, int offset, int delayMilliseconds, int retries, CancellationToken cancellationToken)
     {
-        var url = $"https://openlibrary.org/search.json?q={Uri.EscapeDataString(query)}&limit={Math.Clamp(limit, 1, 100)}&offset={offset}&fields=title,author_name,isbn,first_publish_year,number_of_pages_median,ratings_average,first_sentence,subject";
+        var url = $"https://openlibrary.org/search.json?q={Uri.EscapeDataString(query)}&limit={Math.Clamp(limit, 1, 100)}&offset={offset}&fields=title,author_name,isbn,first_publish_year,number_of_pages_median,ratings_average,first_sentence,subject,language";
         for (var attempt = 0; ; attempt++)
         {
             try
@@ -259,9 +273,15 @@ public sealed class OpenLibraryService
         var author = GetArrayString(item, "author_name")?.Trim();
         var isbn = GetArrayString(item, "isbn", IsbnValidator.IsValidIsbn13);
         var subjects = GetArrayStrings(item, "subject");
+        var languages = GetArrayStrings(item, "language");
         if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(author) || string.IsNullOrWhiteSpace(isbn)) return null;
-        if (LibraryGenreRules.ShouldRejectSubjects(subjects, requestedGenre, _filterJuvenileAndAdultContent)) return null;
-        if (!item.TryGetProperty("first_publish_year", out var yearElement) || !yearElement.TryGetInt32(out var year) || year is < 1000 or > 2100) return null;
+        if (!IsEnglish(languages) || LibraryGenreRules.ShouldRejectSubjects(subjects, requestedGenre, _filterJuvenileAndAdultContent)) return null;
+        int? year = null;
+        if (item.TryGetProperty("first_publish_year", out var yearElement))
+        {
+            if (!yearElement.TryGetInt32(out var parsedYear) || parsedYear < 1450 || parsedYear > DateTime.UtcNow.Year + 1) return null;
+            year = parsedYear;
+        }
 
         var genre = LibraryGenreRules.AllowedGenres.Contains(requestedGenre, StringComparer.OrdinalIgnoreCase)
             ? LibraryGenreRules.AllowedGenres.First(g => g.Equals(requestedGenre, StringComparison.OrdinalIgnoreCase))
@@ -274,7 +294,7 @@ public sealed class OpenLibraryService
         return new Book
         {
             Title = title[..Math.Min(title.Length, 200)],
-            Author = author[..Math.Min(author.Length, 150)],
+            Author = AuthorNameNormalizer.Normalize(author)[..Math.Min(AuthorNameNormalizer.Normalize(author).Length, 150)],
             Genre = genre,
             Subjects = LibraryGenreRules.NormalizeSubjects(subjects),
             PublishedYear = year,
@@ -288,6 +308,8 @@ public sealed class OpenLibraryService
             IsSample = false
         };
     }
+
+    private static bool IsEnglish(IEnumerable<string> languages) => languages.Any(x => x.Equals("eng", StringComparison.OrdinalIgnoreCase) || x.EndsWith("/eng", StringComparison.OrdinalIgnoreCase));
 
     private void ClearCaches()
     {
@@ -307,6 +329,10 @@ public sealed class OpenLibraryService
     private static IReadOnlyList<string> GetArrayStrings(JsonElement element, string property)
     {
         if (!element.TryGetProperty(property, out var value) || value.ValueKind != JsonValueKind.Array) return [];
-        return value.EnumerateArray().Select(x => x.GetString()).Where(x => !string.IsNullOrWhiteSpace(x)).Cast<string>().ToArray();
+        return value.EnumerateArray()
+            .Select(x => x.ValueKind == JsonValueKind.Object && x.TryGetProperty("key", out var key) ? key.GetString() : x.GetString())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Cast<string>()
+            .ToArray();
     }
 }

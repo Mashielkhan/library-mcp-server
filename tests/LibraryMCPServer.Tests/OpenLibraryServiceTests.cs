@@ -14,6 +14,10 @@ namespace LibraryMCPServer.Tests;
 public class OpenLibraryServiceTests
 {
     [Theory]
+    [InlineData("Orwell, George.", "George Orwell")]
+    [InlineData("Jane Austen.", "Jane Austen")]
+    public void AuthorNameNormalizer_CanonicalizesNames(string input, string expected) => Assert.Equal(expected, AuthorNameNormalizer.Normalize(input));
+    [Theory]
     [InlineData("subject:computer programming", "Programming")]
     [InlineData("subject:information technology", "Technology")]
     [InlineData("subject:science fiction", "Science Fiction")]
@@ -42,6 +46,29 @@ public class OpenLibraryServiceTests
         Assert.Equal("Mystery", book!.Genre);
     }
 
+    [Theory]
+    [InlineData("1200", false)]
+    [InlineData("1449", false)]
+    [InlineData("1450", true)]
+    public void DumpEditionParser_ValidatesPublicationYears(string year, bool expected)
+    {
+        var line = $"editions/OL1M\t1\t2020\t{{\"title\":\"A Mystery\",\"isbn_13\":[\"9780451524935\"],\"authors\":[{{\"key\":\"/authors/OL1A\"}}],\"languages\":[{{\"key\":\"/languages/eng\"}}],\"publish_year\":{year},\"subjects\":[\"mystery\"]}}";
+        var authors = new Dictionary<string, string> { ["/authors/OL1A"] = "An Author" };
+        var counts = LibraryGenreRules.AllowedGenres.ToDictionary(x => x, _ => 0L);
+        Assert.Equal(expected, OpenLibraryDumpLoader.TryParseEdition(line, authors, counts, 20, 3, out var book, out _));
+        if (expected) Assert.Equal(1450, book!.PublishedYear);
+    }
+
+    [Fact]
+    public void DumpEditionParser_PreservesUnknownPublicationYearAsNull()
+    {
+        var line = "editions/OL1M\t1\t2020\t{\"title\":\"A Mystery\",\"isbn_13\":[\"9780451524935\"],\"authors\":[{\"key\":\"/authors/OL1A\"}],\"languages\":[{\"key\":\"/languages/eng\"}],\"subjects\":[\"mystery\"]}";
+        var authors = new Dictionary<string, string> { ["/authors/OL1A"] = "An Author" };
+        var counts = LibraryGenreRules.AllowedGenres.ToDictionary(x => x, _ => 0L);
+        Assert.True(OpenLibraryDumpLoader.TryParseEdition(line, authors, counts, 20, 3, out var book, out _));
+        Assert.Null(book!.PublishedYear);
+    }
+
     [Fact]
     public async Task RatingsLoader_UpdatesOnlyMatchedIsbn()
     {
@@ -49,12 +76,33 @@ public class OpenLibraryServiceTests
         context.Books.AddRange(new Models.Book { ISBN = "978-0-451-52493-5", Title = "One", Author = "A", Genre = "Mystery", PublishedYear = 2000, CopiesAvailable = 4 }, new Models.Book { ISBN = "978-0-451-52493-6", Title = "Two", Author = "B", Genre = "Mystery", PublishedYear = 2000, CopiesAvailable = 4 });
         await context.SaveChangesAsync();
         var path = Path.GetTempFileName();
-        await File.WriteAllTextAsync(path, "isbn13,average_rating\n9780451524935,4.25\n9780306406157,5.0\n");
+        await File.WriteAllTextAsync(path, "isbn13,average_rating,ratings_count\n9780451524935,4.25,12\n9780306406157,5.0,20\n");
         try
         {
             Assert.Equal(1, await new GoodbooksRatingsLoader(context).LoadAsync(path));
             Assert.Equal(4.25, (await context.Books.SingleAsync(x => x.ISBN == "978-0-451-52493-5")).Rating);
+            Assert.Equal(12, (await context.Books.SingleAsync(x => x.ISBN == "978-0-451-52493-5")).RatingCount);
             Assert.Null((await context.Books.SingleAsync(x => x.ISBN == "978-0-451-52493-6")).Rating);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task RatingsLoader_StoresRatingCountAndSummarySuppressesLowCountRating()
+    {
+        using var context = new LibraryDbContext(new DbContextOptionsBuilder<LibraryDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+        context.Books.Add(new Models.Book { ISBN = "978-0-451-52493-5", Title = "One", Author = "A", Genre = "Mystery", PublishedYear = 2000, CopiesAvailable = 4 });
+        await context.SaveChangesAsync();
+        var path = Path.GetTempFileName();
+        await File.WriteAllTextAsync(path, "isbn13,average_rating,ratings_count\n9780451524935,4.25,9\n");
+        try
+        {
+            await new GoodbooksRatingsLoader(context).LoadAsync(path);
+            var service = new LibraryService(context, new MemoryCache(new MemoryCacheOptions()), NullLogger<LibraryService>.Instance);
+            var result = await service.SearchBooksAsync("One");
+            Assert.Single(result.Items);
+            Assert.Null(result.Items[0].Rating);
+            Assert.Equal(9, result.Items[0].RatingCount);
         }
         finally { File.Delete(path); }
     }
@@ -96,7 +144,8 @@ public class OpenLibraryServiceTests
             "number_of_pages_median": 328,
             "ratings_average": 4.8,
             "first_sentence": "Updated description.",
-            "subject": ["Fantasy", "Fiction"]
+             "subject": ["Fantasy", "Fiction"],
+             "language": ["eng"]
           }]
         }
         """);
@@ -109,7 +158,7 @@ public class OpenLibraryServiceTests
         Assert.Equal(1, first.importedCount);
         Assert.Equal(0, second.importedCount);
         Assert.Equal(1, await context.Books.CountAsync());
-        Assert.Equal(5, book.CopiesAvailable);
+         Assert.Equal(3, book.CopiesAvailable);
         Assert.Equal("Updated Catalog Title", book.Title);
         Assert.Equal("Fantasy", book.Genre);
         Assert.Equal("Fantasy, Fiction", book.Subjects);

@@ -74,11 +74,14 @@ namespace LibraryMCPServer.Migrations
                         .HasColumnType("int")
                         .HasDefaultValue(300);
 
-                    b.Property<int>("PublishedYear")
+                    b.Property<int?>("PublishedYear")
                         .HasColumnType("int");
 
                     b.Property<double?>("Rating")
                         .HasColumnType("float");
+
+                    b.Property<int?>("RatingCount")
+                        .HasColumnType("int");
 
                     b.Property<string>("Subjects")
                         .IsRequired()

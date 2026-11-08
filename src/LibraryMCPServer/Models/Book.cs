@@ -23,8 +23,8 @@ public class Book
 
     public string Subjects { get; set; } = string.Empty;
 
-    [Range(1000, 2100, ErrorMessage = "PublishedYear must be between 1000 and 2100.")]
-    public int PublishedYear { get; set; }
+    [Range(1450, 2100, ErrorMessage = "PublishedYear must be between 1450 and next year.")]
+    public int? PublishedYear { get; set; }
 
     [Required(ErrorMessage = "ISBN is required and cannot be empty.")]
     [StringLength(25, MinimumLength = 10, ErrorMessage = "ISBN must be between 10 and 25 characters.")]
@@ -35,6 +35,8 @@ public class Book
 
     [Range(0.0, 5.0, ErrorMessage = "Rating must be between 0.0 and 5.0.")]
     public double? Rating { get; set; }
+
+    public int? RatingCount { get; set; }
 
     [Range(1, 10000, ErrorMessage = "PageCount must be between 1 and 10000.")]
     public int PageCount { get; set; } = 300;

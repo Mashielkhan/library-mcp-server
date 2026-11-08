@@ -25,5 +25,13 @@ public class LibrarySettings
 
     public bool FilterJuvenileAndAdultContent { get; set; } = true;
 
-    public int DefaultCopiesAvailable { get; set; } = 5;
+    public int DefaultCopies { get; set; } = 3;
+
+    public int DefaultCopiesAvailable
+    {
+        get => DefaultCopies;
+        set => DefaultCopies = value;
+    }
+
+    public int MinimumRatingCount { get; set; } = 10;
 }

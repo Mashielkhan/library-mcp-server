@@ -48,7 +48,7 @@ public class LibraryDbContext : DbContext
                 .HasColumnType("nvarchar(max)");
 
             entity.Property(b => b.PublishedYear)
-                .IsRequired();
+                .IsRequired(false);
 
             entity.Property(b => b.ISBN)
                 .IsRequired()
@@ -58,6 +58,8 @@ public class LibraryDbContext : DbContext
                 .IsRequired();
 
             entity.Property(b => b.Rating);
+
+            entity.Property(b => b.RatingCount);
 
             entity.Property(b => b.PageCount)
                 .HasDefaultValue(300);

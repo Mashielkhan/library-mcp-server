@@ -116,7 +116,8 @@ Configuration options:
 
 ```text
 FilterJuvenileAndAdultContent=true
-DefaultCopiesAvailable=5
+DefaultCopies=3
+MinimumRatingCount=10
 INCLUDE_SAMPLE_DATA=false
 ```
 
@@ -130,9 +131,13 @@ Download the authors and editions dump files yourself; they are large (the editi
 dotnet run --project src/LibraryMCPServer/LibraryMCPServer.csproj -- --load-open-library-authors C:\data\ol_dump_authors.txt.gz C:\data\authors.lookup.jsonl
 dotnet run --project src/LibraryMCPServer/LibraryMCPServer.csproj -- --load-open-library-dump C:\data\ol_dump_editions.txt.gz --authors-lookup C:\data\authors.lookup.jsonl --max-rows 200000
 dotnet run --project src/LibraryMCPServer/LibraryMCPServer.csproj -- --load-ratings C:\data\books.csv
+dotnet run --project src/LibraryMCPServer/LibraryMCPServer.csproj -- --normalize-default-copies --old-default 5
+dotnet run --project src/LibraryMCPServer/LibraryMCPServer.csproj -- --normalize-authors
 ```
 
-The editions loader reports rows read, kept, skip reasons, inserts, updates, and per-genre counts. It is safe to rerun by ISBN, does not touch loans, and stops before the database reaches 8 GB. SQL Server Express has a 10 GB database-file limit, so leave headroom for indexes and normal operation.
+The editions loader reports rows read, kept, skip reasons (including rejected non-English records), inserts, updates, and per-genre counts. API imports also report `rejectedCount`. All import paths accept English records only. It is safe to rerun by ISBN, does not touch loans, and stops before the database reaches 8 GB. SQL Server Express has a 10 GB database-file limit, so leave headroom for indexes and normal operation.
+
+`DefaultCopies` is the shared default for new API, dump, and ISBN imports. The one-time default-copy command changes only books that still have the specified old default and skips books with active loans. The author cleanup converts `Last, First` to `First Last` and removes trailing periods. `MinimumRatingCount` controls when ratings are exposed; ratings with fewer than 10 votes are stored but returned as `null` by default. Unknown publication years are stored as `NULL`; explicit years must be between 1450 and next year.
 
 The live MCP tools are `search_open_library(query, page, pageSize)` (read-only and returns `inLibrary`) and `add_book_by_isbn(isbn, copies)` (validates and upserts one edition). Live requests use one shared client with a 24-hour memory cache, rate limiting, retry/backoff for 429 and 5xx responses, `Retry-After`, and a 30-second timeout. Set `OpenLibrary__ContactEmail` to a real contact address locally; the placeholder is not intended for production use.
 

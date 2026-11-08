@@ -12,7 +12,7 @@ public sealed class GoodbooksRatingsLoader
 
     public async Task<int> LoadAsync(string path, CancellationToken cancellationToken = default)
     {
-        var ratings = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        var ratings = new Dictionary<string, (double Rating, int? Count)>(StringComparer.OrdinalIgnoreCase);
         await using var stream = File.OpenRead(path);
         using var reader = new StreamReader(stream);
         var header = await reader.ReadLineAsync(cancellationToken);
@@ -20,6 +20,7 @@ public sealed class GoodbooksRatingsLoader
         var columns = CsvLine.Parse(header);
         var isbnIndex = columns.FindIndex(x => x.Equals("isbn13", StringComparison.OrdinalIgnoreCase));
         var ratingIndex = columns.FindIndex(x => x.Equals("average_rating", StringComparison.OrdinalIgnoreCase));
+        var countIndex = columns.FindIndex(x => x.Equals("ratings_count", StringComparison.OrdinalIgnoreCase));
         if (isbnIndex < 0 || ratingIndex < 0) throw new InvalidDataException("The Goodbooks CSV must contain isbn13 and average_rating columns.");
         string? line;
         while ((line = await reader.ReadLineAsync(cancellationToken)) is not null)
@@ -27,12 +28,21 @@ public sealed class GoodbooksRatingsLoader
             var values = CsvLine.Parse(line);
             if (values.Count <= Math.Max(isbnIndex, ratingIndex) || !double.TryParse(values[ratingIndex], NumberStyles.Float, CultureInfo.InvariantCulture, out var rating) || rating is < 0 or > 5) continue;
             var isbn = values[isbnIndex].Replace("-", string.Empty).Trim();
-            if (Utilities.IsbnValidator.IsValidIsbn13(isbn)) ratings[isbn] = rating;
+            if (Utilities.IsbnValidator.IsValidIsbn13(isbn))
+            {
+                int? count = countIndex >= 0 && values.Count > countIndex && int.TryParse(values[countIndex], out var parsedCount) ? parsedCount : null;
+                ratings[isbn] = (rating, count);
+            }
         }
         var isbns = ratings.Keys.ToArray();
         var books = await _db.Books.ToListAsync(cancellationToken);
         var matched = books.Where(x => ratings.ContainsKey(x.ISBN.Replace("-", string.Empty))).ToList();
-        foreach (var book in matched) book.Rating = ratings[book.ISBN.Replace("-", string.Empty)];
+        foreach (var book in matched)
+        {
+            var value = ratings[book.ISBN.Replace("-", string.Empty)];
+            book.Rating = value.Rating;
+            book.RatingCount = value.Count;
+        }
         await _db.SaveChangesAsync(cancellationToken);
         return matched.Count;
     }

@@ -27,13 +27,13 @@ public class LibraryServiceTests
     {
         var books = new List<Book>
         {
-            new() { Title = "1984", Author = "George Orwell", Genre = "Science Fiction", PublishedYear = 1949, ISBN = "978-0-1", CopiesAvailable = 5, Rating = 4.7, PageCount = 328, Description = "Dystopian classic" },
-            new() { Title = "Animal Farm", Author = "George Orwell", Genre = "History", PublishedYear = 1945, ISBN = "978-0-2", CopiesAvailable = 3, Rating = 4.6, PageCount = 140, Description = "Satirical allegory" },
-            new() { Title = "Python Crash Course", Author = "Eric Matthes", Genre = "Programming", PublishedYear = 2019, ISBN = "978-0-3", CopiesAvailable = 10, Rating = 4.8, PageCount = 544, Description = "Hands-on guide" },
-            new() { Title = "Fluent Python", Author = "Luciano Ramalho", Genre = "Programming", PublishedYear = 2022, ISBN = "978-0-4", CopiesAvailable = 4, Rating = 4.9, PageCount = 1014, Description = "Advanced Python" },
-            new() { Title = "The Way of Kings", Author = "Brandon Sanderson", Genre = "Fantasy", PublishedYear = 2010, ISBN = "978-0-5", CopiesAvailable = 8, Rating = 4.9, PageCount = 1007, Description = "Epic fantasy" },
-            new() { Title = "Words of Radiance", Author = "Brandon Sanderson", Genre = "Fantasy", PublishedYear = 2014, ISBN = "978-0-6", CopiesAvailable = 2, Rating = 4.9, PageCount = 1087, Description = "Stormlight 2" },
-            new() { Title = "Oathbringer", Author = "Brandon Sanderson", Genre = "Fantasy", PublishedYear = 2017, ISBN = "978-0-7", CopiesAvailable = 0, Rating = 4.8, PageCount = 1248, Description = "Stormlight 3" }
+            new() { Title = "1984", Author = "George Orwell", Genre = "Science Fiction", PublishedYear = 1949, ISBN = "978-0-1", CopiesAvailable = 5, Rating = 4.7, RatingCount = 10, PageCount = 328, Description = "Dystopian classic" },
+            new() { Title = "Animal Farm", Author = "George Orwell", Genre = "History", PublishedYear = 1945, ISBN = "978-0-2", CopiesAvailable = 3, Rating = 4.6, RatingCount = 10, PageCount = 140, Description = "Satirical allegory" },
+            new() { Title = "Python Crash Course", Author = "Eric Matthes", Genre = "Programming", PublishedYear = 2019, ISBN = "978-0-3", CopiesAvailable = 10, Rating = 4.8, RatingCount = 10, PageCount = 544, Description = "Hands-on guide" },
+            new() { Title = "Fluent Python", Author = "Luciano Ramalho", Genre = "Programming", PublishedYear = 2022, ISBN = "978-0-4", CopiesAvailable = 4, Rating = 4.9, RatingCount = 10, PageCount = 1014, Description = "Advanced Python" },
+            new() { Title = "The Way of Kings", Author = "Brandon Sanderson", Genre = "Fantasy", PublishedYear = 2010, ISBN = "978-0-5", CopiesAvailable = 8, Rating = 4.9, RatingCount = 10, PageCount = 1007, Description = "Epic fantasy" },
+            new() { Title = "Words of Radiance", Author = "Brandon Sanderson", Genre = "Fantasy", PublishedYear = 2014, ISBN = "978-0-6", CopiesAvailable = 2, Rating = 4.9, RatingCount = 10, PageCount = 1087, Description = "Stormlight 2" },
+            new() { Title = "Oathbringer", Author = "Brandon Sanderson", Genre = "Fantasy", PublishedYear = 2017, ISBN = "978-0-7", CopiesAvailable = 0, Rating = 4.8, RatingCount = 10, PageCount = 1248, Description = "Stormlight 3" }
         };
 
         await context.Books.AddRangeAsync(books);

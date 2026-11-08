@@ -65,7 +65,7 @@ public sealed class OpenLibraryDumpLoader
         {
             read++;
             if (read % 10000 == 0) _logger.LogInformation("Open Library dump progress: {RowsRead} rows read, {Kept} kept", read, kept);
-            var result = TryParseEdition(line, lookup, genreCounts, cap, Math.Max(1, _settings.DefaultCopiesAvailable), out var book, out var reason);
+            var result = TryParseEdition(line, lookup, genreCounts, cap, Math.Max(1, _settings.DefaultCopies), out var book, out var reason);
             if (!result)
             {
                 Increment(skipped, reason!);
@@ -112,8 +112,14 @@ public sealed class OpenLibraryDumpLoader
         if (authorKey is null || !authors.TryGetValue(authorKey, out var author)) { reason = "unresolved-author"; return false; }
         var languageValues = ArrayValues(json, "languages");
         if (!languageValues.Any(x => x.EndsWith("/eng", StringComparison.OrdinalIgnoreCase) || x.Equals("eng", StringComparison.OrdinalIgnoreCase))) { reason = "not-english"; return false; }
-        var year = ParseYear(json);
-        if (year is null || year < 1800 || year > DateTime.UtcNow.Year) { reason = "invalid-year"; return false; }
+        var year = ParseYear(json, out var hasExplicitYear);
+        if (json.TryGetProperty("publish_year", out var publishYearElement) && publishYearElement.ValueKind != JsonValueKind.Null)
+        {
+            hasExplicitYear = true;
+            if (!publishYearElement.TryGetInt32(out var publishYear) || publishYear < 1450 || publishYear > DateTime.UtcNow.Year + 1) year = null;
+            else year = publishYear;
+        }
+        if (hasExplicitYear && year is null) { reason = "invalid-year"; return false; }
         var subjects = ArrayValues(json, "subjects");
         var genre = LibraryGenreRules.MapGenre(null, string.Join(", ", subjects));
         if (LibraryGenreRules.ShouldRejectSubjects(subjects, genre)) { reason = "filtered-subjects"; return false; }
@@ -123,10 +129,10 @@ public sealed class OpenLibraryDumpLoader
         {
             ISBN = IsbnValidator.FormatIsbn13(isbn),
             Title = title[..Math.Min(200, title.Length)],
-            Author = author[..Math.Min(150, author.Length)],
+            Author = AuthorNameNormalizer.Normalize(author)[..Math.Min(150, AuthorNameNormalizer.Normalize(author).Length)],
             Genre = genre,
             Subjects = LibraryGenreRules.NormalizeSubjects(subjects),
-            PublishedYear = year.Value,
+            PublishedYear = year,
             CopiesAvailable = defaultCopies,
             PageCount = 300,
             IsAuthentic = true,
@@ -198,10 +204,15 @@ public sealed class OpenLibraryDumpLoader
         return result;
     }
 
-    private static int? ParseYear(JsonElement json)
+    private static int? ParseYear(JsonElement json, out bool hasExplicitYear)
     {
+        hasExplicitYear = false;
         foreach (var value in new[] { StringProperty(json, "publish_year"), StringProperty(json, "publish_date") })
-            if (value is not null && int.TryParse(value[..Math.Min(4, value.Length)], out var year)) return year;
+            if (value is not null)
+            {
+                hasExplicitYear = true;
+                if (int.TryParse(value[..Math.Min(4, value.Length)], out var year) && year >= 1450 && year <= DateTime.UtcNow.Year + 1) return year;
+            }
         return null;
     }
 

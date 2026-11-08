@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Configuration;
+using System.Linq.Expressions;
 
 namespace LibraryMCPServer.Services;
 
@@ -21,6 +22,7 @@ public class LibraryService : ILibraryService
     private readonly IMemoryCache _cache;
     private readonly ILogger<LibraryService> _logger;
     private readonly bool _includeSampleData;
+    private readonly int _minimumRatingCount;
 
     public LibraryService(
         LibraryDbContext context,
@@ -32,6 +34,7 @@ public class LibraryService : ILibraryService
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _includeSampleData = configuration?.GetValue("INCLUDE_SAMPLE_DATA", configuration.GetValue("LibrarySettings:IncludeSampleData", false)) ?? false;
+        _minimumRatingCount = Math.Max(0, configuration?.GetValue("LibrarySettings:MinimumRatingCount", 10) ?? 10);
     }
 
     public async Task<PaginatedResultDto<BookSummaryDto>> SearchBooksAsync(
@@ -68,7 +71,7 @@ public class LibraryService : ILibraryService
 
             var candidates = await CatalogBooks()
                 .AsNoTracking()
-                .OrderByDescending(b => b.Rating)
+                .OrderByDescending(b => b.RatingCount >= _minimumRatingCount ? b.Rating : null)
                 .Take(250)
                 .ToListAsync(cancellationToken);
 
@@ -164,13 +167,13 @@ public class LibraryService : ILibraryService
 
         if (minYear.HasValue) q = q.Where(b => b.PublishedYear >= minYear.Value);
         if (maxYear.HasValue) q = q.Where(b => b.PublishedYear <= maxYear.Value);
-        if (minRating.HasValue) q = q.Where(b => b.Rating >= minRating.Value);
+        if (minRating.HasValue) q = q.Where(b => b.RatingCount >= _minimumRatingCount && b.Rating >= minRating.Value);
 
         var totalCount = await q.CountAsync(cancellationToken);
         var totalPages = totalCount > 0 ? (int)Math.Ceiling((double)totalCount / validPageSize) : 0;
 
         var items = await q
-            .OrderByDescending(b => b.Rating)
+            .OrderByDescending(b => b.RatingCount >= _minimumRatingCount ? b.Rating : null)
             .ThenBy(b => b.Title)
             .Skip((validPage - 1) * validPageSize)
             .Take(validPageSize)
@@ -247,11 +250,14 @@ public class LibraryService : ILibraryService
 
         var authenticCount = await catalog.CountAsync(b => b.IsAuthentic, cancellationToken);
         var totalCopies = await catalog.SumAsync(b => (long)b.CopiesAvailable, cancellationToken);
-        var activeLoans = await _context.BookLoans.AsNoTracking().CountAsync(l => !l.IsReturned && (_includeSampleData || !l.Book.IsSample), cancellationToken);
+        var catalogBookIds = catalog.Select(b => b.Id);
+        var activeLoans = await _context.BookLoans
+            .AsNoTracking()
+            .CountAsync(l => !l.IsReturned && (_includeSampleData || catalogBookIds.Contains(l.BookId)), cancellationToken);
 
         // Group across multi-genre tags cleanly
         var allBooks = await catalog
-            .Select(b => new { b.Genre, b.CopiesAvailable, b.Rating })
+            .Select(b => new { b.Genre, b.CopiesAvailable, b.Rating, b.RatingCount })
             .ToListAsync(cancellationToken);
 
         var genreMap = new Dictionary<string, (int count, int copies, List<double> ratings)>(StringComparer.OrdinalIgnoreCase);
@@ -265,7 +271,7 @@ public class LibraryService : ILibraryService
                     genreMap[part] = (0, 0, new List<double>());
                 }
                 var cur = genreMap[part];
-            if (b.Rating.HasValue) cur.ratings.Add(b.Rating.Value);
+            if (b.RatingCount >= _minimumRatingCount && b.Rating.HasValue) cur.ratings.Add(b.Rating.Value);
                 genreMap[part] = (cur.count + 1, cur.copies + b.CopiesAvailable, cur.ratings);
             }
         }
@@ -313,7 +319,8 @@ public class LibraryService : ILibraryService
                 b.PublishedYear,
                 b.ISBN,
                 b.CopiesAvailable,
-                b.Rating,
+                b.RatingCount >= _minimumRatingCount ? b.Rating : null,
+                b.RatingCount,
                 b.PageCount,
                 b.CoverImageUrl,
                 b.Description,
@@ -365,7 +372,7 @@ public class LibraryService : ILibraryService
         var totalCount = await query.CountAsync(cancellationToken);
         var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling((double)totalCount / validPageSize);
         var items = await query.Skip((validPage - 1) * validPageSize).Take(validPageSize)
-            .Select(b => MapToSummary(b))
+            .Select(b => new BookSummaryDto(b.Id, b.Title, b.Author, b.Genre, b.PublishedYear, b.CopiesAvailable, b.RatingCount >= _minimumRatingCount ? b.Rating : null, b.RatingCount, b.PageCount, b.CoverImageUrl, b.IsAuthentic))
             .ToListAsync(cancellationToken);
         return new PaginatedResultDto<BookSummaryDto>(validPage, validPageSize, totalPages, totalCount, validPage < totalPages, items);
     }
@@ -502,8 +509,8 @@ public class LibraryService : ILibraryService
         return new PaginatedResultDto<LoanDto>(validPage, validPageSize, totalPages, totalCount, validPage < totalPages, loans);
     }
 
-    private static BookSummaryDto MapToSummary(Book b) =>
-        new(b.Id, b.Title, b.Author, b.Genre, b.PublishedYear, b.CopiesAvailable, b.Rating, b.PageCount, b.CoverImageUrl, b.IsAuthentic);
+    private BookSummaryDto MapToSummary(Book b) =>
+        new(b.Id, b.Title, b.Author, b.Genre, b.PublishedYear, b.CopiesAvailable, b.RatingCount >= _minimumRatingCount ? b.Rating : null, b.RatingCount, b.PageCount, b.CoverImageUrl, b.IsAuthentic);
 
     private IQueryable<Book> CatalogBooks() =>
         _context.Books.AsNoTracking().Where(b => _includeSampleData || !b.IsSample);
